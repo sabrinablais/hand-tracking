@@ -1,69 +1,40 @@
 import cv2
-import mediapipe as mp
 import numpy as np
 
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True, max_num_faces=1)
+# Load face + eye classifiers
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+
 cap = cv2.VideoCapture(0)
-
-# Left/right eye horizontal landmarks
-LEFT_EYE_H = [33, 133]   # corners
-RIGHT_EYE_H = [362, 263] # corners
-
-# Upper/lower landmarks for blink detection (optional)
-LEFT_EYE_V = [159, 145]
-RIGHT_EYE_V = [386, 374]
-
-def horizontal_ratio(landmarks, eye_idx):
-    left = np.array([landmarks[eye_idx[0]].x, landmarks[eye_idx[0]].y])
-    right = np.array([landmarks[eye_idx[1]].x, landmarks[eye_idx[1]].y])
-    center = (left + right) / 2
-    # ratio relative to eye width
-    ratio = (center[0] - left[0]) / (right[0] - left[0] + 1e-6)
-    return ratio
-
-# Calibration
-center_ratio_left = None
-center_ratio_right = None
-
-print("Look straight at camera, press 'C' to calibrate.")
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
-    frame = cv2.flip(frame, 1)
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb)
 
-    direction = "No Face"
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
-    if results.multi_face_landmarks:
-        landmarks = results.multi_face_landmarks[0].landmark
+    for (x, y, w, h) in faces:
+        roi_gray = gray[y:y+h, x:x+w]
+        roi_color = frame[y:y+h, x:x+w]
+        eyes = eye_cascade.detectMultiScale(roi_gray)
+        for (ex, ey, ew, eh) in eyes:
+            eye_gray = roi_gray[ey:ey+eh, ex:ex+ew]
+            eye_color = roi_color[ey:ey+eh, ex:ex+ew]
 
-        left_ratio = horizontal_ratio(landmarks, LEFT_EYE_H)
-        right_ratio = horizontal_ratio(landmarks, RIGHT_EYE_H)
+            # Threshold to find pupil
+            _, thresh = cv2.threshold(eye_gray, 50, 255, cv2.THRESH_BINARY_INV)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        if center_ratio_left is not None and center_ratio_right is not None:
-            threshold = 0.03  # smaller threshold for webcam sensitivity
-            if left_ratio < center_ratio_left - threshold and right_ratio < center_ratio_right - threshold:
-                direction = "RIGHT"
-            elif left_ratio > center_ratio_left + threshold and right_ratio > center_ratio_right + threshold:
-                direction = "LEFT"
-            else:
-                direction = "CENTER"
-        else:
-            direction = "Uncalibrated (press C)"
+            if contours:
+                largest = max(contours, key=cv2.contourArea)
+                if len(largest) >= 5:
+                    ellipse = cv2.fitEllipse(largest)
+                    cv2.ellipse(eye_color, ellipse, (0,255,0), 2)
 
-    cv2.putText(frame, f"Gaze: {direction}", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,255), 3)
-    cv2.imshow("Eye Tracking", frame)
-
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('c') and results.multi_face_landmarks:
-        center_ratio_left = horizontal_ratio(landmarks, LEFT_EYE_H)
-        center_ratio_right = horizontal_ratio(landmarks, RIGHT_EYE_H)
-        print(f"Calibrated: left={center_ratio_left:.3f}, right={center_ratio_right:.3f}")
-    elif key == 27:
+    cv2.imshow('Eye Tracker', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
 cap.release()
