@@ -18,9 +18,7 @@ LEVEL_BOSS_THRESHOLDS = [150, 500, 1000, 2000, 3500, 5500]  # extend as needed
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_confidence=0.7)
+hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.6, min_tracking_confidence=0.6)
 
 # ------------------------------
 # Pygame Setup
@@ -80,9 +78,9 @@ def create_state():
             "prev_x": None,
             "prev_y": None,
             "life": 5,
-            # "shield": False,    # removed
+            "shield": False,
             "pinch_cooldown": 0,
-            "invincible": 0
+            "invincible": 0  # frames of invincibility after taking damage
         },
         "bullets": [],
         "enemy_bullets": [],
@@ -204,65 +202,84 @@ state = create_state()
 
 while True:
     clock.tick(60)
-    # read frame from camera
-    ret, frame = cap.read()
-    if not ret:
+    success, frame = cap.read()
+    if not success:
+        break
+    frame = cv2.flip(frame, 1)
+    h, w, c = frame.shape
+    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = hands.process(img_rgb)
+
+    # ---- MENU: press ENTER to start ----
+    if state["menu"]:
+        win.fill(BLACK)
+        draw_text_centered(win, "Air Space VR Shooter", font_big, WHITE, -100)
+        draw_text_centered(win, "By Sabrina Blais (who should be sleeping by now...)", font_med, WHITE, -30)
+        draw_text_centered(win, "Press ENTER to start", font_small, WHITE, 80)
+        pygame.display.update()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); cap.release(); cv2.destroyAllWindows(); exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN:
+                    state["menu"] = False
+                elif event.key == pygame.K_ESCAPE:
+                    pygame.quit(); cap.release(); cv2.destroyAllWindows(); exit()
+        # allow menu to be controlled also by mouse click optionally
         continue
 
-    # Mirror can cause inverted controls. Disable to get natural mapping.
-    MIRROR = False  # set False to stop horizontal mirroring
+    # game running:
+    # events (collect key events here too)
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit(); cap.release(); cv2.destroyAllWindows(); exit()
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                pygame.quit(); cap.release(); cv2.destroyAllWindows(); exit()
 
-    if MIRROR:
-        frame = cv2.flip(frame, 1)
+    # reset shield each frame
+    state["player"]["shield"] = False
 
-    # (Optional) padding to improve edge detection
-    PAD = 80
-    padded = cv2.copyMakeBorder(frame, PAD, PAD, PAD, PAD, cv2.BORDER_CONSTANT, value=[0,0,0])
-    rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
-    results = hands.process(rgb)
-
-    # Map a landmark from padded image back to original camera coords (no extra flip)
-    def landmark_to_screen(lm, orig_w, orig_h, pad=PAD, padded_w=None, padded_h=None):
-        pw = padded_w if padded_w is not None else (orig_w + 2*pad)
-        ph = padded_h if padded_h is not None else (orig_h + 2*pad)
-        x_padded = int(lm.x * pw)
-        y_padded = int(lm.y * ph)
-        x = x_padded - pad
-        y = y_padded - pad
-        x = max(0, min(orig_w-1, x))
-        y = max(0, min(orig_h-1, y))
-        return x, y
-
-    h0, w0 = frame.shape[:2]
+    # HAND INPUT
     if results.multi_hand_landmarks:
-        for handLms in results.multi_hand_landmarks:
-            mp_draw.draw_landmarks(padded, handLms, mp_hands.HAND_CONNECTIONS)
+        hand_landmarks = results.multi_hand_landmarks[0]
+        player = state["player"]
+        index_tip = hand_landmarks.landmark[8]
+        thumb_tip = hand_landmarks.landmark[4]
+        wrist = hand_landmarks.landmark[0]
+        fingertips = [hand_landmarks.landmark[i] for i in [8,12,16,20]]
 
-            # map tips back to original frame coords
-            index_tip = handLms.landmark[8]
-            thumb_tip = handLms.landmark[4]
-            ix, iy = landmark_to_screen(index_tip, w0, h0)
-            tx, ty = landmark_to_screen(thumb_tip, w0, h0)
+        # compute hand center (wrist + index + middle) for better alignment
+        middle_tip = hand_landmarks.landmark[12]
+        hand_cx = (wrist.x + index_tip.x + middle_tip.x) / 3
+        hand_cy = (wrist.y + index_tip.y + middle_tip.y) / 3
+        px, py = int(hand_cx * WIDTH), int(hand_cy * HEIGHT)
 
-            # Set player pos directly from camera coordinates (NO inversion)
-            state["player"]["prev_x"] = state["player"]["x"]
-            state["player"]["prev_y"] = state["player"]["y"]
-            # map camera coords to game window coords (clamped)
-            state["player"]["x"] = int(max(50, min(WIDTH-50, ix / w0 * WIDTH)))
-            state["player"]["y"] = int(max(80, min(HEIGHT-80, iy / h0 * HEIGHT)))
+        # smoothing movement
+        if player["prev_x"] is not None:
+            player["x"] += (px - player["x"]) / 3.0
+            player["y"] += (py - player["y"]) / 3.0
+        else:
+            player["x"], player["y"] = px, py
+        player["prev_x"], player["prev_y"] = px, py
 
-            # Pinch to shoot (unchanged)
-            pinch_distance = ((tx - ix)**2 + (ty - iy)**2)**0.5
-            if pinch_distance < 30 and state["player"]["pinch_cooldown"] <= 0:
-                state["bullets"].append({"x": state["player"]["x"], "y": state["player"]["y"], "trail": []})
-                random.choice(laser_sounds).play()
-                state["player"]["pinch_cooldown"] = 10
+        # clamp to screen (so you can reach corners)
+        player["x"] = max(50, min(WIDTH-50, int(player["x"])))
+        player["y"] = max(50, min(HEIGHT-50, int(player["y"])))
 
-            if state["player"]["pinch_cooldown"] > 0:
-                state["player"]["pinch_cooldown"] -= 1
-    else:
-        # keep last position if no hand detected
-        pass
+        # pinch to shoot (with cooldown)
+        pinch = math.hypot((index_tip.x - thumb_tip.x) * w, (index_tip.y - thumb_tip.y) * h)
+        if pinch < 40 and player["pinch_cooldown"] == 0:
+            state["bullets"].append({"x": player["x"], "y": player["y"], "trail": []})
+            random.choice(laser_sounds).play()
+            player["pinch_cooldown"] = 12
+        if player["pinch_cooldown"] > 0:
+            player["pinch_cooldown"] -= 1
+
+        # open palm -> shield
+        if all(f.y < wrist.y for f in fingertips):
+            player["shield"] = True
 
     # Move bullets
     for b in state["bullets"][:]:
@@ -318,48 +335,23 @@ while True:
             if e in state["enemies"]:
                 state["enemies"].remove(e)
 
-    # Enemy collisions: touching an enemy damages the player (do NOT kill the enemy)
-    player = state["player"]
-    px, py = player["x"], player["y"]
-    for e in state["enemies"][:]:
-        ex, ey = e.get("x", 0), e.get("y", 0)
-        ew, eh = e.get("w", 60), e.get("h", 50)
-
-        # Simple AABB (rectangle) collision between player and enemy
-        if (px + 40 > ex and px - 40 < ex + ew and
-            py + 40 > ey and py - 40 < ey + eh):
-            # Damage player if not invincible
-            if player["invincible"] == 0:
-                player["life"] -= 1
-                player["invincible"] = 60  # frames of invincibility
-                spawn_explosion(state, px, py, count=10)
-                explosion_sound.play()
-                if player["life"] <= 0:
-                    state["game_over"] = True
-            # do NOT remove or kill the enemy here
-    # Move enemy bullets and handle collisions with player
+    # Move enemy bullets and handle collisions
     for eb in state["enemy_bullets"][:]:
         eb["y"] += 8 + state["level"]*0.2
-
-        if abs(eb["x"] - player["x"]) < 40 and abs(eb["y"] - player["y"]) < 40:
+        if eb["y"] > HEIGHT + 20:
+            state["enemy_bullets"].remove(eb)
+            continue
+        if abs(eb["x"] - player["x"]) < 36 and abs(eb["y"] - player["y"]) < 36 and not player["shield"]:
             if player["invincible"] == 0:
                 player["life"] -= 1
                 player["invincible"] = 60
-                spawn_explosion(state, player["x"], player["y"], count=10)
+                spawn_explosion(state, player["x"], player["y"])
                 explosion_sound.play()
                 if player["life"] <= 0:
                     state["game_over"] = True
-            try:
+                    state["running"] = False
+            if eb in state["enemy_bullets"]:
                 state["enemy_bullets"].remove(eb)
-            except ValueError:
-                pass
-            continue
-
-        if eb["y"] > HEIGHT + 20:
-            try:
-                state["enemy_bullets"].remove(eb)
-            except ValueError:
-                pass
 
     # Power-ups: heart drops
     if random.random() < 0.002:
@@ -439,9 +431,9 @@ while True:
         draw_text_centered(win, "GAME OVER", font_big, RED)
         pygame.display.update()
         pygame.time.wait(2500)
-        pygame.quit(); cap.release(); cv2.destroyAll_windows(); exit()
+        pygame.quit(); cap.release(); cv2.destroyAllWindows(); exit()
 
 # cleanup (won't reach normally because of exits above)
 pygame.quit()
 cap.release()
-cv2.destroyAll_windows()
+cv2.destroyAllWindows()

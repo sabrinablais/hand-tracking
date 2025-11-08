@@ -1,0 +1,70 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True, max_num_faces=1)
+cap = cv2.VideoCapture(0)
+
+# Left/right eye horizontal landmarks
+LEFT_EYE_H = [33, 133]   # corners
+RIGHT_EYE_H = [362, 263] # corners
+
+# Upper/lower landmarks for blink detection (optional)
+LEFT_EYE_V = [159, 145]
+RIGHT_EYE_V = [386, 374]
+
+def horizontal_ratio(landmarks, eye_idx):
+    left = np.array([landmarks[eye_idx[0]].x, landmarks[eye_idx[0]].y])
+    right = np.array([landmarks[eye_idx[1]].x, landmarks[eye_idx[1]].y])
+    center = (left + right) / 2
+    # ratio relative to eye width
+    ratio = (center[0] - left[0]) / (right[0] - left[0] + 1e-6)
+    return ratio
+
+# Calibration
+center_ratio_left = None
+center_ratio_right = None
+
+print("Look straight at camera, press 'C' to calibrate.")
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    frame = cv2.flip(frame, 1)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(rgb)
+
+    direction = "No Face"
+
+    if results.multi_face_landmarks:
+        landmarks = results.multi_face_landmarks[0].landmark
+
+        left_ratio = horizontal_ratio(landmarks, LEFT_EYE_H)
+        right_ratio = horizontal_ratio(landmarks, RIGHT_EYE_H)
+
+        if center_ratio_left is not None and center_ratio_right is not None:
+            threshold = 0.03  # smaller threshold for webcam sensitivity
+            if left_ratio < center_ratio_left - threshold and right_ratio < center_ratio_right - threshold:
+                direction = "RIGHT"
+            elif left_ratio > center_ratio_left + threshold and right_ratio > center_ratio_right + threshold:
+                direction = "LEFT"
+            else:
+                direction = "CENTER"
+        else:
+            direction = "Uncalibrated (press C)"
+
+    cv2.putText(frame, f"Gaze: {direction}", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,255), 3)
+    cv2.imshow("Eye Tracking", frame)
+
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('c') and results.multi_face_landmarks:
+        center_ratio_left = horizontal_ratio(landmarks, LEFT_EYE_H)
+        center_ratio_right = horizontal_ratio(landmarks, RIGHT_EYE_H)
+        print(f"Calibrated: left={center_ratio_left:.3f}, right={center_ratio_right:.3f}")
+    elif key == 27:
+        break
+
+cap.release()
+cv2.destroyAllWindows()
