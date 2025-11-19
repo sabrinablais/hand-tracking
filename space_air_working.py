@@ -27,7 +27,7 @@ pygame.init()
 win = pygame.display.set_mode((0,0), pygame.FULLSCREEN)
 info = pygame.display.Info()
 WIDTH, HEIGHT = info.current_w, info.current_h
-pygame.display.set_caption("Air Space VR Shooter - Sabrina Blais (who should be sleeping by now...)")
+pygame.display.set_caption("Air Space VR Shooter - by Sabrina")
 
 clock = pygame.time.Clock()
 font_big = pygame.font.SysFont("Arial", 80)
@@ -276,10 +276,6 @@ while True:
             player["pinch_cooldown"] = 12
         if player["pinch_cooldown"] > 0:
             player["pinch_cooldown"] -= 1
-
-        # open palm -> shield
-        if all(f.y < wrist.y for f in fingertips):
-            player["shield"] = True
 
     # Move bullets
     for b in state["bullets"][:]:
