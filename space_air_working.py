@@ -400,11 +400,7 @@ while True:
                     state["score"] += 50
                     explosion_sound.play()
                     if boss in state["bosses"]:
-                        state["bosses"].remove(boss)
-            
-            
-            
-            
+                        state["bosses"].remove(boss)   
                     state["level"] += 1
                     state["boss_spawned"] = False
                     draw_text_centered(win, f"Level {state['level']}", font_big, BLUE)
